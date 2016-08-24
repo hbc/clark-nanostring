@@ -179,6 +179,22 @@ spotbarplot(extract_pred(eset, is_negative))
 spotbarplot(extract_pred(eset, is_housekeeping))
 ```
 
+Here we calculate the geometric means of the housekeeping genes for
+each sample, and use that to normalize the counts.
+
+```{r geometric-means-housekeeping}
+geo_housekeeping = function(eset) {
+  counts = exprs(eset)
+  hk = counts[grepl("Housekeeping", rownames(counts)),]
+  geoMeans = apply(hk, 2, function(col) exp(mean(log(col[col != 0]))))
+  return(geoMeans)}
+normFactor = function(eset) {
+  geoMeans = geo_housekeeping(eset)
+  nf = mean(geoMeans) / geoMeans
+  return(nf)}
+metadata$normfactor = normFactor(eset)
+```
+
 ## Drop counts
 ```{r counts}
 drop_unusable = function(counts) {
@@ -202,8 +218,6 @@ library(edgeR)
 library(limma)
 library(vsn)
 design = model.matrix(~metadata$thickness+metadata$progressing)
-dge = DGEList(counts)
-v = voom(dge, design)
 ```
 
 ```{r pca}
@@ -226,6 +240,7 @@ pca_loadings = function(object, ntop=500) {
   names(percentVar) = colnames(pca$x)
   pca$percentVar = percentVar
   return(pca)}
+oldcounts = counts
 vstdata = vst(counts)
 pc = pca_loadings(vstdata, 50)
 comps = data.frame(pc$x)
@@ -242,9 +257,41 @@ pca_plot = function(comps, nc1, nc2, colorby) {
   }
 pca_plot(comps, 1, 2, "progressing")
 pca_plot(comps, 1, 2, "thickness")
+pca_plot(comps, 1, 2, "normfactor")
 ```
 
-```{r  de}
+# Differential expression
+Here we do it two different ways. The first normalizing the counts by
+the normalization factor calculated from the geometric means of the housekeeping
+genes, the second we just use the raw counts.
+
+## Normalized by the housekeeping genes
+```{r de-geo-normalized}
+ncounts = counts * metadata$normfactor
+dge = DGEList(ncounts)
+v = voom(dge, design)
+fit = lmFit(v,design)
+fit = eBayes(fit)
+prog = topTable(fit, coef=3, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(prog, file="progressive-hk.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+thick = topTable(fit, coef=2, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(thick, file="thickness-hk.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+```
+
+[Progressive housekeeping normalized](progressive-hk.csv)
+
+[Thickness housekeeping normalized](thickness-hk.csv)
+
+## Not normalized by the housekeeping genes
+```{r de}
+dge = DGEList(counts)
+v = voom(dge, design)
 fit = lmFit(v,design)
 fit = eBayes(fit)
 prog = topTable(fit, coef=3, number=Inf) %>%
@@ -258,3 +305,17 @@ thick = topTable(fit, coef=2, number=Inf) %>%
 write.table(thick, file="thickness.csv", col.names=TRUE, quote=FALSE,
             row.names=FALSE, sep=",")
 ```
+
+[Progressive](progressive.csv)
+
+[Thickness](thickness.csv)
+
+# Summary
+These samples are extremely variable-- we normalized the samples and corrected
+for thickness and still can't find anything significant. We don't see any clear
+clustering on the PCA plots by either thickness or progressive status, so these
+samples have too much variability to call any differences.
+
+That being said it might be worthwhile to take the output and ran by unadjusted
+pvalue or logFC and see if any of those hits look interesting, even if they
+don't reach significance.
