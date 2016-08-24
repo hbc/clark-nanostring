@@ -27,7 +27,7 @@ colnames(eset) = metadata$sample
 set.seed(12345)
 ```
 
-## Imaging QC
+# Imaging QC
 
 ```{r imaging-qc}
 plotFOV = function(eset, metadata) {
@@ -47,7 +47,7 @@ plotFOV = function(eset, metadata) {
 plotFOV(eset, metadata)
 ```
 
-## Binding density
+# Binding density
 ```{r binding-density}
 plotBD = function(eset, metadata) {
   pdat = pData(eset) %>%
@@ -67,7 +67,7 @@ plotBD = function(eset, metadata) {
 plotBD(eset, metadata)
 ```
 
-## Total counts vs mRNA detected
+# Total counts vs mRNA detected
 ```{r }
 plotComplexity = function(eset, metadata) {
   counts = exprs(eset)
@@ -134,7 +134,7 @@ spotboxplot = function(toplot) {
 }
 ```
 
-## Positive controls
+# Positive controls
 Below we look at the R^2 correlation between the expected positive
 control concentrations and the observed concentrations for each
 sample.
@@ -167,14 +167,14 @@ posR2 = function(eset) {
 corsamples = posR2(eset)
 ```
 
-## Negative controls
+# Negative controls
 We can see some samples have a higher negative control count than the
 other samples.
 ```{r negative-controls}
 spotbarplot(extract_pred(eset, is_negative))
 ```
 
-## Housekeeping
+# Housekeeping
 ```{r housekeeping}
 spotbarplot(extract_pred(eset, is_housekeeping))
 ```
@@ -195,7 +195,7 @@ normFactor = function(eset) {
 metadata$normfactor = normFactor(eset)
 ```
 
-## Drop counts
+# Drop counts
 ```{r counts}
 drop_unusable = function(counts) {
   drop = is_spikein(rownames(counts))
@@ -212,7 +212,7 @@ nfloor = 30
 counts = counts[(rowSums(counts) > nfloor) < (0.2 * ncol(counts)),]
 ```
 
-## Differential expression
+# Differential expression
 ```{r de-setup}
 library(edgeR)
 library(limma)
