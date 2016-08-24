@@ -1,0 +1,260 @@
+---
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    highlight: zenburn
+    theme: flatly
+---
+
+```{r load-data}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(NanoStringQCPro)
+extradata = read_csv("rcc/160823 data on mm sent to core.csv")
+metadata = data.frame(fname=list.files("rcc", pattern="*.RCC")) %>%
+  tidyr::separate(fname, c("longname", "nanoid", "idstr"), sep="-", remove=FALSE) %>%
+  tidyr::separate(idstr, c("block", "trash"), sep="_") %>%
+  select(fname, block) %>% left_join(extradata, by="block")
+metadata$sample = metadata$block
+rccFiles = paste("rcc/", metadata$fname, sep="")
+rlf = "rcc/NS_CancerImmune_C2929.rlf"
+eset = newRccSet(rccFiles=rccFiles, rlf=rlf)
+colnames(eset) = metadata$sample
+# set seed to be reproduciblish
+set.seed(12345)
+```
+
+## Imaging QC
+
+```{r imaging-qc}
+plotFOV = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(rowname, pcounted)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$pcounted))) +
+    ylab("percentage of FOV counted") + xlab("sample") +
+    geom_hline(yintercept=75, color="red")
+}
+plotFOV(eset, metadata)
+```
+
+## Binding density
+```{r binding-density}
+plotBD = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(rowname, BindingDensity)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
+    ylab("Binding density") + xlab("sample") +
+    geom_hline(yintercept=0.05, color="red") +
+    geom_hline(yintercept=2.25, color="red")
+}
+plotBD(eset, metadata)
+```
+
+## Total counts vs mRNA detected
+```{r }
+plotComplexity = function(eset, metadata) {
+  counts = exprs(eset)
+  endocounts = counts[grepl("Endo", rownames(counts)),]
+  cdf = data.frame(total=colSums(counts), detected=colSums(counts > 10))
+  rownames(cdf) = colnames(counts)
+  cdf$sample = rownames(cdf)
+  cdf = cdf %>% left_join(metadata, by="sample")
+  ggplot(cdf, aes(total, detected)) + geom_point()
+}
+plotComplexity(eset, metadata)
+```
+
+
+```{r positive}
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+is_positive = function(column) {
+  return(grepl("Pos", column))
+}
+is_negative = function(column) {
+  return(grepl("Neg", column))
+}
+is_spikein = function(column) {
+  return(grepl("Spike", column))
+}
+is_ligation = function(column) {
+  return(grepl("Ligati", column))
+}
+is_housekeeping = function(column) {
+  return(grepl("Housekee", column))
+}
+is_prior = function(column) {
+  return(grepl("miR-159", column) | grepl("miR-248", column) |
+         grepl("miR-254", column))
+}
+
+extract_pred = function(eset, predicate, counts=FALSE) {
+  if(!counts) {
+    counts = data.frame(exprs(eset))
+  } else {
+    counts = eset
+    }
+  toplot = counts[predicate(rownames(counts)),] %>%
+    tibble::rownames_to_column() %>%
+    tidyr::gather("sample", "count", -rowname)
+  colnames(toplot) = c("spot", "sample", "count")
+  toplot = toplot %>% left_join(metadata, by="sample")
+  return(toplot)
+}
+spotbarplot = function(toplot) {
+  ggplot(toplot,
+        aes(sample, count)) + geom_bar(stat='identity') +
+    facet_wrap(~spot) +
+    theme(axis.text.x = element_blank(),
+          text = element_text(size=8))
+}
+spotboxplot = function(toplot) {
+  ggplot(toplot,
+        aes(linehypo, count)) + geom_boxplot() +
+    facet_wrap(~spot) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+}
+```
+
+## Positive controls
+Below we look at the R^2 correlation between the expected positive
+control concentrations and the observed concentrations for each
+sample.
+```{r is-positive}
+spotbarplot(extract_pred(eset, is_positive))
+```
+
+```{r pos-r2}
+posR2 = function(eset) {
+  pcdf = data.frame(concentration=log2(c(128, 32, 8, 2, 0.5, 0.125)),
+                    GeneName=paste("POS", c("A", "B", "C", "D", "E", "F"), sep="_"))
+  pccounts = subset(exprs(eset), grepl("Positive_POS", rownames(exprs(eset))))
+  pccounts = pccounts[sort(rownames(pccounts)),]
+  rownames(pccounts) = pcdf$GeneName
+  corsamples = data.frame(correlation=apply(pccounts, 2,
+                                            function(x) cor(x, pcdf$concentration)),
+                          sample=colnames(pccounts)) %>%
+    left_join(metadata, by="sample")
+  p = ggplot(corsamples, aes(sample, correlation)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(corsamples$correlation))) +
+    ylab("positive control correlation") +
+    xlab("sample")
+  print(p)
+  return(corsamples)
+}
+corsamples = posR2(eset)
+```
+
+## Negative controls
+We can see some samples have a higher negative control count than the
+other samples.
+```{r negative-controls}
+spotbarplot(extract_pred(eset, is_negative))
+```
+
+## Housekeeping
+```{r housekeeping}
+spotbarplot(extract_pred(eset, is_housekeeping))
+```
+
+## Drop counts
+```{r counts}
+drop_unusable = function(counts) {
+  drop = is_spikein(rownames(counts))
+  drop = drop | is_positive(rownames(counts))
+  drop = drop | is_housekeeping(rownames(counts))
+  drop = drop | is_ligation(rownames(counts))
+  keep = counts[!drop,]
+  keep = keep[, !grepl("Blank", colnames(keep))]
+  return(keep)
+}
+counts = exprs(eset)
+counts = drop_unusable(counts)
+nfloor = 30
+counts = counts[(rowSums(counts) > nfloor) < (0.2 * ncol(counts)),]
+```
+
+## Differential expression
+```{r de-setup}
+library(edgeR)
+library(limma)
+library(vsn)
+design = model.matrix(~metadata$thickness+metadata$progressing)
+dge = DGEList(counts)
+v = voom(dge, design)
+```
+
+```{r pca}
+vst <- function(countdata){
+  library(DESeq)
+  condition <- factor(rep("Tumour", ncol(countdata)))
+  countdata <- newCountDataSet(countdata,condition )
+  countdata <- estimateSizeFactors( countdata )
+  cdsBlind <- DESeq::estimateDispersions( countdata, method="blind")
+  vstdata <- varianceStabilizingTransformation( cdsBlind )
+  return(exprs(vstdata))
+}
+pca_loadings = function(object, ntop=500) {
+  object = as.matrix(object)
+  rv <- matrixStats::rowVars(object)
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop,
+      length(rv)))]
+  pca <- prcomp(t(object[select,]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  names(percentVar) = colnames(pca$x)
+  pca$percentVar = percentVar
+  return(pca)}
+vstdata = vst(counts)
+pc = pca_loadings(vstdata, 50)
+comps = data.frame(pc$x)
+comps$Name = rownames(comps)
+library(dplyr)
+comps = comps %>% left_join(metadata, by=c("Name"="sample"))
+pca_plot = function(comps, nc1, nc2, colorby) {
+   c1str = paste0("PC", nc1)
+   c2str = paste0("PC", nc2)
+  ggplot(comps, aes_string(c1str, c2str, color=colorby)) +
+    geom_point() + theme_bw() +
+    xlab(paste0(c1str, ": ", round(pc$percentVar[nc1] * 100), "% variance")) +
+    ylab(paste0(c2str, ": ", round(pc$percentVar[nc2] * 100), "% variance"))
+  }
+pca_plot(comps, 1, 2, "progressing")
+pca_plot(comps, 1, 2, "thickness")
+```
+
+```{r  de}
+fit = lmFit(v,design)
+fit = eBayes(fit)
+prog = topTable(fit, coef=3, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(prog, file="progressive.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+thick = topTable(fit, coef=2, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(thick, file="thickness.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+```
