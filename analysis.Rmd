@@ -310,6 +310,13 @@ write.table(thick, file="thickness.csv", col.names=TRUE, quote=FALSE,
 
 [Thickness](thickness.csv)
 
+## Effect of normalizing on logFC
+```{r normeffect}
+p = read_csv("progressive.csv") %>% arrange(rowname)
+phk = read_csv("progressive-hk.csv") %>% arrange(rowname)
+qplot(p$logFC, phk$logFC) + geom_point()
+```
+
 # Summary
 These samples are extremely variable-- we normalized the samples and corrected
 for thickness and still can't find anything significant. We don't see any clear
@@ -319,3 +326,70 @@ samples have too much variability to call any differences.
 That being said it might be worthwhile to take the output and ran by unadjusted
 pvalue or logFC and see if any of those hits look interesting, even if they
 don't reach significance.
+
+# Remove unwanted variation
+Here we can try to settle down some of the variance by looking for systematic
+factors that are different between the samples and correcting for it,
+even if we don't know what they are. We will use the Remove Unwanted
+Variation package to do that.
+
+```{r ruv}
+library(EDASeq)
+counts = exprs(eset)
+colnames(counts) = metadata$sample
+set <- newSeqExpressionSet(counts,
+                           phenoData = data.frame(metadata,
+                                                  row.names=metadata$sample))
+set <- betweenLaneNormalization(set, which="upper")
+hk = rownames(counts)[grepl("House", rownames(counts))]
+genes = rownames(counts)[grepl("Endo", rownames(counts))]
+library(RUVSeq)
+set1 = RUVg(set, hk, k=3)
+w1 = pData(set1)$W_1
+w2 = pData(set1)$W_2
+metadata$w1 = w1
+ncounts = normCounts(set1)
+vstdata = vst(ncounts)
+pc = pca_loadings(vstdata, 50)
+comps = data.frame(pc$x)
+comps$Name = rownames(comps)
+library(dplyr)
+comps = comps %>% left_join(metadata, by=c("Name"="sample"))
+pca_plot = function(comps, nc1, nc2, colorby) {
+   c1str = paste0("PC", nc1)
+   c2str = paste0("PC", nc2)
+  ggplot(comps, aes_string(c1str, c2str, color=colorby)) +
+    geom_point() + theme_bw() +
+    xlab(paste0(c1str, ": ", round(pc$percentVar[nc1] * 100), "% variance")) +
+    ylab(paste0(c2str, ": ", round(pc$percentVar[nc2] * 100), "% variance"))
+  }
+pca_plot(comps, 1, 2, "thickness")
+pca_plot(comps, 1, 2, "progressing")
+pca_plot(comps, 1, 2, "w1")
+```
+
+This doesn't make the PCA plots look much better. Below we try testing again,
+but we still don't find anything changing with thickness or progressing status
+even after trying to correct for the variation.
+
+```{r de-ruv}
+design = model.matrix(~w1+thickness+progressing)
+dge = DGEList(counts)
+v = voom(dge, design)
+fit = lmFit(v,design)
+fit = eBayes(fit)
+prog = topTable(fit, coef=4, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(prog, file="progressive-ruv.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+thick = topTable(fit, coef=3, number=Inf) %>%
+  tibble::rownames_to_column() %>%
+  arrange(adj.P.Val)
+write.table(thick, file="thickness-ruv.csv", col.names=TRUE, quote=FALSE,
+            row.names=FALSE, sep=",")
+```
+
+[Progressive (RUV)](progressive-ruv.csv)
+
+[Thickness (RUV)](thickness-ruv.csv)
