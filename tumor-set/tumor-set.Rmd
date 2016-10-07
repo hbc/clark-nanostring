@@ -54,11 +54,6 @@ The binding density is within the acceptable limits, but barely for a few
 of the samples. There may be quality differences between the samples despite
 not being technically out of the acceptable binding density range.
 
-We can see samples that are from the non-progressing samples tend to have
-a lower binding density and the samples that are from the progressing samples
-tend to have a higher binding density. If there isn't a good biological explanation,
-that is bad because we have some kind of technical batch effect going on.
-
 ```{r binding-density}
 plotBD = function(eset, metadata) {
   pdat = pData(eset) %>%
@@ -215,51 +210,6 @@ The negative baseline looks stable between the different samples, which is good.
 ```{r negative-controls}
 spotbarplot(extract_pred(eset, is_negative))
 ```
-
-# Housekeeping
-```{r housekeeping}
-spotbarplot(extract_pred(eset, is_housekeeping))
-```
-
-Here we calculate the geometric means of the housekeeping genes for
-each sample. We will use that to normalize the counts.
-
-```{r geometric-means-housekeeping}
-geo_housekeeping = function(eset) {
-  counts = exprs(eset)
-  hk = counts[grepl("Housekeeping", rownames(counts)),]
-  geoMeans = apply(hk, 2, function(col) exp(mean(log(col[col != 0]))))
-  return(geoMeans)}
-normFactor = function(eset) {
-  geoMeans = geo_housekeeping(eset)
-  nf = mean(geoMeans) / geoMeans
-  return(nf)}
-metadata$normfactor = normFactor(eset)
-```
-
-# Normalization factor vs binding density
-I thought that the normalization factor would be related to the binding density
-somehow, but it isn't. Despite the binding density being super batch-affected,
-none of the other metrics seem affected by it.
-
-```{r norm-vs-binding}
-plotBD = function(eset, metadata) {
-  pdat = pData(eset) %>%
-    tibble::rownames_to_column() %>%
-    left_join(metadata, by=c("rowname"="sample"))
-  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
-  ggplot(pdat, aes(normfactor, BindingDensity, color=condition)) +
-    geom_point() +
-    scale_y_continuous(expand = c(0,0)) +
-    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
-    ylab("Binding density") +
-    xlab("nomalization factor") +
-    geom_hline(yintercept=0.05, color="red") +
-    geom_hline(yintercept=2.25, color="red")
-}
-plotBD(eset, metadata)
-```
-
 # Normalization
 ## Positive control normalization
 Here we normalize the samples by the normalization factor we calculated using
@@ -345,6 +295,47 @@ ggplot(postnorm, aes(sample, count)) +
   scale_y_continuous(trans = log2_trans()) +
   xlab("") + ggtitle("post-normalization") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+# Normalization factor vs binding density
+We can see the binding density is negatively correlated to the amount of
+positive control present. When there is less RNA in the cartridge,
+more of what is sequences is the positive controls.
+
+We see the binding density is positive correlated to the housekeeping genes.
+If there is less RNA in the samples we should see less of the housekeeping genes.
+
+```{r norm-vs-binding}
+plotBD = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(1/pos_nf, BindingDensity, color=condition)) +
+    geom_point() +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
+    ylab("Binding density") +
+    xlab("positive control normalization factor") +
+    geom_hline(yintercept=0.05, color="red") +
+    geom_hline(yintercept=2.25, color="red")
+  }
+plotBD(eset, metadata)
+plotBD = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(1/hk_nf, BindingDensity, color=condition)) +
+    geom_point() +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
+    ylab("Binding density") +
+    xlab("housekeeping control normalization factor") +
+    geom_hline(yintercept=0.05, color="red") +
+    geom_hline(yintercept=2.25, color="red")
+  }
+plotBD(eset, metadata)
 ```
 
 # Drop genes
