@@ -1,6 +1,6 @@
 {
   "name": "Clark-nanostring",
   "tagline": "Project repository for the Clark lab's nanostring project",
-  "body": "# Report\r\n[Report](https://rawgit.com/hbc/clark-nanostring/master/analysis.html)",
+  "body": "# Immune set\r\n[Report](https://rawgit.com/hbc/clark-nanostring/master/immune-set/analysis.html)\r\n\r\n# Tumor set\r\n[Report](https://rawgit.com/hbc/clark-nanostring/master/tumor-set/tumor-set.html)",
   "note": "Don't delete this file! It's used internally to help with page regeneration."
 }
