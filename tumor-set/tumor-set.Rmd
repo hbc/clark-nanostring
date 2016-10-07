@@ -8,6 +8,12 @@ output:
     theme: flatly
 ---
 
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(tidy=TRUE, highlight=TRUE, dev="png",
+               cache=TRUE, highlight=TRUE, autodep=TRUE, warning=FALSE, error=FALSE,
+               message=FALSE, prompt=TRUE, comment='', fig.cap='')
+```
+
 ```{r load-data}
 library(dplyr)
 library(ggplot2)
@@ -262,11 +268,12 @@ abovenoise = rowSums(hk > (4 * lod)) == ncol(hk)
 hk = hk[abovenoise,]
 ```
 
-We'll also pick genes that have a CV on the lower end. We'll set a cutoff of 1.75:
+We'll also pick genes that have a CV on the lower end. We'll set a cutoff of
+the mean + 2 SD.
 ```{r hk-cv-selection}
 cvs = rowMeans(hk) / rowSds(hk)
 qplot(cvs) + geom_histogram()
-hk = hk[cvs < 1.75,]
+hk = hk[cvs < (mean(cvs) + 2 * sd(cvs)),]
 hk_norm = rownames(hk)
 ```
 
