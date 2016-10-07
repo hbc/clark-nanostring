@@ -1,0 +1,496 @@
+---
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    highlight: zenburn
+    theme: flatly
+---
+
+```{r load-data}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(NanoStringQCPro)
+
+metadata = data.frame(fname=list.files("rcc", pattern="*.RCC")) %>%
+  tidyr::separate(fname, c("date", "id", "sample", "trash"), sep="_", remove=FALSE) %>%
+  select(fname, sample) %>% mutate(sample=gsub(" ", "", sample)) %>%
+  left_join(read_csv("metadata/samples.csv", col_names=c("sample", "condition")),
+                     by="sample")
+rccFiles = paste("rcc/", metadata$fname, sep="")
+eset = newRccSet(rccFiles=rccFiles)
+colnames(eset) = metadata$sample
+rownames(metadata) = metadata$sample
+# set seed to be reproduciblish
+set.seed(12345)
+```
+
+# Imaging QC
+
+The samples look fine in terms of the area imaged on each cartridge.
+
+```{r imaging-qc}
+plotFOV = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(rowname, pcounted)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$pcounted))) +
+    ylab("percentage of FOV counted") + xlab("sample") +
+    geom_hline(yintercept=75, color="red")
+}
+plotFOV(eset, metadata)
+```
+
+# Binding density
+The binding density is within the acceptable limits, but barely for a few
+of the samples. There may be quality differences between the samples despite
+not being technically out of the acceptable binding density range.
+
+We can see samples that are from the non-progressing samples tend to have
+a lower binding density and the samples that are from the progressing samples
+tend to have a higher binding density. If there isn't a good biological explanation,
+that is bad because we have some kind of technical batch effect going on.
+
+```{r binding-density}
+plotBD = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(rowname, BindingDensity, color=condition)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
+    ylab("Binding density") + xlab("sample") +
+    geom_hline(yintercept=0.05, color="red") +
+    geom_hline(yintercept=2.25, color="red")
+}
+plotBD(eset, metadata)
+```
+
+# Total counts vs mRNA detected
+We can see that some of the samples, we haven't saturated mRNA detection. There
+isn't a systematic difference between the progressive/non-progressing tumors
+however.
+
+```{r complexity}
+plotComplexity = function(eset, metadata) {
+  counts = exprs(eset)
+  endocounts = counts[grepl("Endo", rownames(counts)),]
+  cdf = data.frame(total=colSums(counts), detected=colSums(counts > 10))
+  rownames(cdf) = colnames(counts)
+  cdf$sample = rownames(cdf)
+  cdf = cdf %>% left_join(metadata, by="sample")
+  ggplot(cdf, aes(total, detected, color=condition)) + geom_point()
+}
+plotComplexity(eset, metadata)
+```
+
+```{r positive}
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+is_positive = function(column) {
+  return(grepl("Pos", column))
+}
+is_negative = function(column) {
+  return(grepl("Neg", column))
+}
+is_spikein = function(column) {
+  return(grepl("Spike", column))
+}
+is_ligation = function(column) {
+  return(grepl("Ligati", column))
+}
+is_housekeeping = function(column) {
+  return(grepl("Housekee", column))
+}
+is_prior = function(column) {
+  return(grepl("miR-159", column) | grepl("miR-248", column) |
+         grepl("miR-254", column))
+}
+
+extract_pred = function(eset, predicate, counts=FALSE) {
+  if(!counts) {
+    counts = data.frame(exprs(eset))
+  } else {
+    counts = eset
+    }
+  toplot = counts[predicate(rownames(counts)),] %>%
+    tibble::rownames_to_column() %>%
+    tidyr::gather("sample", "count", -rowname)
+  colnames(toplot) = c("spot", "sample", "count")
+  toplot = toplot %>% left_join(metadata, by="sample")
+  return(toplot)
+}
+spotbarplot = function(toplot) {
+  ggplot(toplot, aes(sample, count, fill=condition)) +
+    geom_bar(stat='identity') +
+    facet_wrap(~spot) +
+    theme(axis.text.x = element_blank(),
+          text = element_text(size=8))
+}
+spotboxplot = function(toplot) {
+  ggplot(toplot,
+        aes(linehypo, count)) + geom_boxplot() +
+    facet_wrap(~spot) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+}
+```
+
+# Limit of detection
+Using the negative controls we can set a limit of detection for the samples.
+Here we set it to be the mean of the negative control plus 2 SDs.
+
+```{r limit-of-detection}
+lodcounts = extract_pred(eset, is_negative)
+lod = mean(lodcounts$count) + 2 * sd(lodcounts$count)
+```
+
+We calculate the LOD as `r lod` transcripts.
+
+# Positive controls
+Below we look at the R^2 correlation between the expected positive
+control concentrations and the observed concentrations for each
+sample. There is no systematic difference between the two conditions, which is
+good.
+
+```{r is-positive}
+spotbarplot(extract_pred(eset, is_positive))
+```
+
+```{r positive-vs-expected, fig.width=14, fig.height=7}
+library(scales)
+pccounts = extract_pred(eset, is_positive)
+pccounts$GeneName = substr(pccounts$spot, 10, 14)
+pcdf = data.frame(concentration=c(128, 32, 8, 2, 0.5, 0.125),
+                  GeneName=paste("POS", c("A", "B", "C", "D", "E", "F"), sep="_"))
+pccounts = pccounts %>% left_join(pcdf, by="GeneName")
+ggplot(pccounts, aes(concentration, count, color=condition, label=GeneName)) +
+  facet_wrap(~sample) +
+  geom_text(size=2) +
+  geom_hline(yintercept=lod, show.legend=TRUE, color="red") +
+  scale_y_continuous(trans = log2_trans()) +
+  scale_x_continuous(trans = log2_trans())
+
+```
+
+```{r pos-r2}
+posR2 = function(eset) {
+  pcdf = data.frame(concentration=log2(c(128, 32, 8, 2, 0.5, 0.125)),
+                    GeneName=paste("POS", c("A", "B", "C", "D", "E", "F"), sep="_"))
+  pccounts = subset(exprs(eset), grepl("Positive_POS", rownames(exprs(eset))))
+  pccounts = pccounts[sort(rownames(pccounts)),]
+  rownames(pccounts) = pcdf$GeneName
+  corsamples = data.frame(correlation=apply(pccounts, 2,
+                                            function(x) cor(x, pcdf$concentration)),
+                          sample=colnames(pccounts)) %>%
+    left_join(metadata, by="sample")
+  p = ggplot(corsamples, aes(sample, correlation, color=condition)) + geom_point() +
+      theme(axis.text.x=element_blank(),
+            axis.ticks.x=element_blank(),
+            strip.text.x=element_text(size=8)) +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(corsamples$correlation))) +
+    ylab("positive control correlation") +
+    xlab("sample")
+  print(p)
+  return(corsamples)
+}
+corsamples = posR2(eset)
+```
+
+# Negative controls
+The negative baseline looks stable between the different samples, which is good.
+```{r negative-controls}
+spotbarplot(extract_pred(eset, is_negative))
+```
+
+# Housekeeping
+```{r housekeeping}
+spotbarplot(extract_pred(eset, is_housekeeping))
+```
+
+Here we calculate the geometric means of the housekeeping genes for
+each sample. We will use that to normalize the counts.
+
+```{r geometric-means-housekeeping}
+geo_housekeeping = function(eset) {
+  counts = exprs(eset)
+  hk = counts[grepl("Housekeeping", rownames(counts)),]
+  geoMeans = apply(hk, 2, function(col) exp(mean(log(col[col != 0]))))
+  return(geoMeans)}
+normFactor = function(eset) {
+  geoMeans = geo_housekeeping(eset)
+  nf = mean(geoMeans) / geoMeans
+  return(nf)}
+metadata$normfactor = normFactor(eset)
+```
+
+# Normalization factor vs binding density
+I thought that the normalization factor would be related to the binding density
+somehow, but it isn't. Despite the binding density being super batch-affected,
+none of the other metrics seem affected by it.
+
+```{r norm-vs-binding}
+plotBD = function(eset, metadata) {
+  pdat = pData(eset) %>%
+    tibble::rownames_to_column() %>%
+    left_join(metadata, by=c("rowname"="sample"))
+  pdat$pcounted = pdat$FovCounted/pdat$FovCount * 100
+  ggplot(pdat, aes(normfactor, BindingDensity, color=condition)) +
+    geom_point() +
+    scale_y_continuous(expand = c(0,0)) +
+    expand_limits(y = c(0,1.05 * max(pdat$BindingDensity))) +
+    ylab("Binding density") +
+    xlab("nomalization factor") +
+    geom_hline(yintercept=0.05, color="red") +
+    geom_hline(yintercept=2.25, color="red")
+}
+plotBD(eset, metadata)
+```
+
+# Normalization
+## Positive control normalization
+Here we normalize the samples by the normalization factor we calculated using
+the positive controls. This attempts to normalize for technical noise across
+the samples. We can see this doesn't do much to make the samples look better.
+```{r positivenormalization}
+geo_pos = function(eset) {
+  counts = exprs(eset)
+  hk = counts[grepl("Positive", rownames(counts)),]
+  geoMeans = apply(hk, 2, function(col) exp(mean(log(col[col != 0]))))
+  return(geoMeans)}
+posFactor = function(eset) {
+  geoMeans = geo_pos(eset)
+  nf = mean(geoMeans) / geoMeans
+  return(nf)}
+metadata$pos_nf = posFactor(eset)
+counts = exprs(eset)
+prenorm = counts %>%
+  data.frame() %>%
+  tidyr::gather("sample", "count")
+ggplot(prenorm, aes(sample, count)) +
+  geom_boxplot() +
+  scale_y_continuous(trans = log2_trans()) +
+  xlab("") + ggtitle("pre-normalization") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+ncounts = counts %*% diag(metadata$pos_nf)
+colnames(ncounts) = colnames(counts)
+postnorm = ncounts %>%
+  data.frame() %>%
+  tidyr::gather("sample", "count")
+ggplot(postnorm, aes(sample, count)) +
+  geom_boxplot() +
+  scale_y_continuous(trans = log2_trans()) +
+  xlab("") + ggtitle("post-normalization") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Normalization via housekeeping genes
+Here we normalize by housekeeping genes. First we have to pick which
+housekeeping genes to use to normalize. We will pick housekeeping genes
+that have an expression level much higher than the noise floor and
+are not highly variably across the samples to do the normalization.
+We'll select genes that are 4x higher than the limit of detection in
+all samples.
+
+```{r hk-noise-selection}
+library(matrixStats)
+hk = ncounts[grepl("Housekeeping", rownames(ncounts)),]
+abovenoise = rowSums(hk > (4 * lod)) == ncol(hk)
+hk = hk[abovenoise,]
+```
+
+We'll also pick genes that have a CV on the lower end. We'll set a cutoff of 1.75:
+```{r hk-cv-selection}
+cvs = rowMeans(hk) / rowSds(hk)
+qplot(cvs) + geom_histogram()
+hk = hk[cvs < 1.75,]
+hk_norm = rownames(hk)
+```
+
+That leaves us with `r nrow(hk)` genes to use to normalize the samples.
+
+Normalizing by housekeeping genes does a good job making the samples
+more similar to each other.
+
+```{r housekeeping-gene-normalization}
+hk_pos = function(counts) {
+  hk = counts[hk_norm,]
+  geoMeans = apply(hk, 2, function(col) exp(mean(log(col[col != 0]))))
+  return(geoMeans)}
+hkFactor = function(counts) {
+  geoMeans = hk_pos(counts)
+  nf = mean(geoMeans) / geoMeans
+  return(nf)}
+metadata$hk_nf = hkFactor(ncounts)
+ncounts = ncounts %*% diag(metadata$hk_nf)
+colnames(ncounts) = colnames(counts)
+postnorm = ncounts %>%
+  data.frame() %>%
+  tidyr::gather("sample", "count")
+ggplot(postnorm, aes(sample, count)) +
+  geom_boxplot() +
+  scale_y_continuous(trans = log2_trans()) +
+  xlab("") + ggtitle("post-normalization") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+# Drop genes
+We'll drop the genes that are below the LOD in over 80% of the samples:
+
+```{r counts}
+drop_unusable = function(counts) {
+  drop = is_spikein(rownames(counts))
+  drop = drop | is_positive(rownames(counts))
+  drop = drop | is_housekeeping(rownames(counts))
+  drop = drop | is_ligation(rownames(counts))
+  drop = drop | is_negative(rownames(counts))
+  keep = counts[!drop,]
+  keep = keep[, !grepl("Blank", colnames(keep))]
+  return(keep)
+}
+ncounts = drop_unusable(ncounts)
+ncounts = ncounts[(rowSums(ncounts) > lod) < (0.2 * ncol(ncounts)),]
+ncounts = round(ncounts)
+```
+
+We're left with `r nrow(ncounts)` genes to work with.
+
+# Sample clustering
+```{r de-setup}
+library(edgeR)
+library(limma)
+library(vsn)
+design = model.matrix(~condition, data=metadata)
+```
+
+Here we scaled and centered the normalized data and then performed PCA to look
+at how the samples cluster. The samples don't cluster clearly along components
+1-4 by condition, which indicates the samples are more variable than the signal
+between the progressing/non-progressinfg samples, if the signal exists.
+
+```{r pca}
+pca_loadings = function(object, ntop=500) {
+  object = as.matrix(object)
+  rv <- matrixStats::rowVars(object)
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop,
+      length(rv)))]
+  pca <- prcomp(t(object[select,]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  names(percentVar) = colnames(pca$x)
+  pca$percentVar = percentVar
+  return(pca)}
+pcdata = scale(ncounts, center=TRUE, scale=TRUE)
+pc = pca_loadings(pcdata, 50)
+comps = data.frame(pc$x)
+comps$Name = rownames(comps)
+library(dplyr)
+comps = comps %>% left_join(metadata, by=c("Name"="sample"))
+pca_plot = function(comps, nc1, nc2, colorby) {
+   c1str = paste0("PC", nc1)
+   c2str = paste0("PC", nc2)
+  ggplot(comps, aes_string(c1str, c2str, color=colorby)) +
+    geom_point() + theme_bw() +
+    xlab(paste0(c1str, ": ", round(pc$percentVar[nc1] * 100), "% variance")) +
+    ylab(paste0(c2str, ": ", round(pc$percentVar[nc2] * 100), "% variance"))
+  }
+pca_plot(comps, 1, 2, "condition")
+pca_plot(comps, 3, 4, "condition")
+```
+
+# Differential expression
+## DESeq2
+Here, we skip the internal DESeq2 normalization step since we have normalized
+the counts already.
+
+```{r de-prenormalized}
+library(DESeq2)
+design=~condition
+dds = DESeqDataSetFromMatrix(countData=ncounts, colData=metadata, design=design)
+sizeFactors(dds) = rep(1, ncol(ncounts))
+dds = DESeq(dds)
+res = results(dds, addMLE=TRUE) %>%
+  data.frame() %>%
+  tibble::rownames_to_column() %>%
+  arrange(pvalue)
+write_csv(res, "deseq2.csv")
+```
+
+We aren't seeing too much signal between the groups, we don't find much different
+between the samples. That doesn't mean the data is unusable, but it means to go
+any further with it you'd have to use the list as a way to narrow down what might
+be changing, and confirm it via a different method.
+
+[DESeq2 differential expression](deseq2.csv)
+
+## T-test
+The nSolver analysis suite from NanoString just uses a t-test to test the
+differences rather than fit a negative binomial model. Doing that we also don't
+see any differences. We can see the two methods are strongly correlated if we
+plot the p-values against each other.
+
+```{r t-test}
+t_results = apply(ncounts, 1, function(x) t.test(x[1:6], x[7:12]))
+pvalue <- unlist(lapply(t_results, function(x) x$p.value))
+fdr <- p.adjust(pvalue, method = "fdr")
+tres = data.frame(rowname=rownames(ncounts), pvalue=pvalue, fdr=fdr) %>%
+  arrange(pvalue)
+z = tres %>% left_join(res, by="rowname")
+ggplot(z, aes(pvalue.x, pvalue.y)) + geom_point() + xlab("t-test pvalue") +
+  ylab("DESeq2 p-value")
+write_csv(tres, "t-test.csv")
+```
+
+[T-test differential expression](t-test.csv)
+
+# Power
+Here we use some really rough power calculations for a two sample t-test to try
+to estimate the number of samples we would need in order to see a signal. Here
+we plot the distribution of effect sizes in the data and use that as an estimate
+of the true effect sizes. Then we ask what sample sizes we would need to pick up
+80% of the true DE genes with a false positive rate of 0.05 using the median
+effect size we see in the data. That gives us 110 samples needed per condition.
+If we increase the effect size by doubling it, meaning we will only see the
+larger differences, we can drop that down to 28 samples.
+
+```{r power}
+library(pwr)
+npmeans = rowMeans(ncounts[,1:6])
+pmeans = rowMeans(ncounts[,7:12])
+effsize = abs(npmeans - pmeans) / rowSds(ncounts)
+qplot(effsize) + geom_histogram()
+pwr.t.test(d=median(effsize) , sig.level=0.05, power=0.80,
+           type = "two.sample")
+pwr.t.test(d=median(effsize) * 2 , sig.level=0.05, power=0.80,
+           type = "two.sample")
+```
+
+The NanoString data is similar to RNA-seq data in terms of its characteristics.
+It is count based and can be well-fit by the negative binomial model. It has a
+similar mean-variance relationship as RNA-seq data which we show below. Here we
+estimate the dispersion of the NanoString data and then use that estimate to
+calculate sample sizes we would need to have 80% power to detect fold changes of
+at least 2x with a false positive rate of 0.05 in an experiment with 730 genes.
+We can see the estimated sample size agrees somewhat with that calculated by
+looking at the two sample t-test, we need somewhere around 20 samples per
+condition to be able to pull out differences between the samples.
+
+```{r rna-seq-calculator}
+plotDispEsts(dds)
+library(ssizeRNA)
+ss = ssizeRNA_single(nGenes = 730, pi0 = 0.8, m = 200, mu = 1500,
+                     disp = 0.3, logfc = log(2), fdr = 0.05,
+                     power = 0.8, maxN = 100)
+```
