@@ -360,7 +360,7 @@ drop_unusable = function(counts) {
   return(keep)
 }
 ncounts = drop_unusable(ncounts)
-ncounts = ncounts[(rowSums(ncounts) > lod) < (0.2 * ncol(ncounts)),]
+ncounts = ncounts[(rowSums(ncounts < lod) < (0.2 * ncol(ncounts))),]
 ncounts = round(ncounts)
 ```
 
